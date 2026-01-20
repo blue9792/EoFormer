@@ -303,9 +303,9 @@ def main(args):
         # 计算参数量
         if args.distributed:
             if local_rank==0:
-            input = torch.randn(1, 4, 128, 128, 128).to(local_rank)
-            profile_model = model.module if hasattr(model, "module") else model
-            flops, params = profile(profile_model, (input,))
+                input = torch.randn(1, 4, 128, 128, 128).to(local_rank)
+                profile_model = model.module if hasattr(model, "module") else model
+                flops, params = profile(profile_model, (input,))
                 print('Params = ' + str(params/1000**2) + 'M')
                 print('FLOPs = ' + str(flops/1000**3) + 'G')
             torch.distributed.barrier()
