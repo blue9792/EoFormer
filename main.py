@@ -394,11 +394,12 @@ def main(args):
         min_epoch = 30 if args.n_epochs > 150 else 0
 
         # 滑动窗口inference
+        predictor = model.module if hasattr(model, "module") else model
         model_inferer = partial(
             sliding_window_inference,
             roi_size=train_crop_size,
             sw_batch_size=args.sw_batch_size,
-            predictor=model.module,
+            predictor=predictor,
             overlap=args.inf_overlap,
         )
         
