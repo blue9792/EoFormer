@@ -290,7 +290,9 @@ def main(args):
             model = nn.parallel.DistributedDataParallel(model.to(local_rank), device_ids=[local_rank])
             # model = nn.parallel.DistributedDataParallel(model.to(local_rank), device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
         else:
-            model = nn.DataParallel(model.to(device), device_ids = args.gpu_id)
+            model = model.to(device)
+            if args.gpu_id and len(args.gpu_id) > 1:
+                model = nn.DataParallel(model, device_ids=args.gpu_id)
         
         # if args.distributed:
         #     if local_rank==0:
