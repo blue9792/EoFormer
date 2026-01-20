@@ -258,7 +258,7 @@ class Block(nn.Module):
         self.position_embedding = position_embedding
         
     def forward(self, x):
-        if self.position_embedding:
+        if self.position_embedding is not None:
             x = self.res_scale1(x) + \
                 self.layer_scale1(
                     self.drop_path1(
