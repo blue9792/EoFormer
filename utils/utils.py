@@ -109,6 +109,10 @@ def calculate_metric(y_pred=None, y=None, eps=1e-6):
     cnt = np.zeros((n_class))
     for b, c in np.ndindex(batch_size, n_class):
         edges_pred, edges_gt = y_pred[b, c], y[b, c]
+        if torch.is_tensor(edges_pred):
+            edges_pred = edges_pred.detach().cpu().numpy()
+        if torch.is_tensor(edges_gt):
+            edges_gt = edges_gt.detach().cpu().numpy()
         if not np.any(edges_gt):
             warnings.warn(f"the ground truth of class {c} is all 0, this may result in nan distance.")
         if not np.any(edges_pred):
