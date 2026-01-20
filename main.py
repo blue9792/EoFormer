@@ -26,7 +26,7 @@ from thop import profile
 
 from optimizers.lr_scheduler import LinearWarmupCosineAnnealingLR
 
-from dataset.dataset import get_dataset_brats
+from dataset.dataset import get_dataset_brats, get_dataset_npy
 from utils.utils import SequentialDistributedSampler
 from trainer import train, evaluate, test
 
@@ -158,6 +158,7 @@ def main(args):
 
         f.write('Training start!\n')
         
+        test_loader = None
         if args.dataset.lower() == 'brats':
             
             train_dataset, valid_dataset, test_dataset, train_list, valid_list, test_list = get_dataset_brats(
@@ -197,21 +198,59 @@ def main(args):
                                     pin_memory=True,
                                     num_workers=args.num_workers
                                     )
+        elif args.dataset.lower() == 'npy':
+            train_dataset, valid_dataset = get_dataset_npy(
+                train_dir=args.train_dir,
+                val_dir=args.val_dir,
+                num_frames=args.crop_D,
+                min_tumor_slices=args.min_tumor_slices,
+                reverse_time_prob=args.reverse_time_prob,
+                seed=args.manual_seed,
+                cache_npy_in_ram=args.cache_npy_in_ram,
+                target_hw=(args.crop_H, args.crop_W),
+            )
+
+            if args.distributed:
+                train_sampler = DistributedSampler(train_dataset)
+                train_loader = DataLoader(
+                                    train_dataset,
+                                    batch_size=args.batch_size,
+                                    sampler=train_sampler,
+                                    pin_memory=True,
+                                    num_workers=args.num_workers,
+                                    prefetch_factor=4)
+            else:
+                train_loader = DataLoader(
+                                    train_dataset,
+                                    batch_size=args.batch_size,
+                                    shuffle=True,
+                                    pin_memory=True,
+                                    num_workers=args.num_workers,
+                                    prefetch_factor=4
+                                )
+
+            valid_loader = DataLoader(
+                                    valid_dataset,
+                                    batch_size=1,
+                                    shuffle=False,
+                                    pin_memory=True,
+                                    num_workers=args.num_workers
+                                    )
             
         if args.distributed:
             if local_rank==0:
                 print('train dataset len:', len(train_dataset))
                 print('valid dataset len:', len(valid_dataset))
-                print('test dataset len:', len(test_dataset))
-                sub0 = train_dataset[3]
-                print(sub0['image_meta_dict']['filename_or_obj'].split('/')[-1])
+                if test_loader is not None:
+                    print('test dataset len:', len(test_dataset))
+                sample_index = 0
+                sub0 = train_dataset[sample_index]
                 print(f'train input shape: ', sub0['image'].shape, 'label shape:', sub0['label'].shape)
-                sub1 = valid_dataset[3]
-                print(sub1['image_meta_dict']['filename_or_obj'].split('/')[-1])
+                sub1 = valid_dataset[sample_index]
                 print('valid input shape: ', sub1['image'].shape, 'label shape:', sub1['label'].shape)
-                sub2 = test_dataset[3]
-                print(sub2['image_meta_dict']['filename_or_obj'].split('/')[-1])
-                print('test input shape: ', sub2['image'].shape, 'label shape:', sub2['label'].shape)
+                if test_loader is not None:
+                    sub2 = test_dataset[sample_index]
+                    print('test input shape: ', sub2['image'].shape, 'label shape:', sub2['label'].shape)
                 
                 print(' - - -'*20)
                 print('device:', device)
@@ -223,13 +262,16 @@ def main(args):
         else:
             print('train dataset len:', len(train_dataset))
             print('valid dataset len:', len(valid_dataset))
-            print('test dataset len:', len(test_dataset))
-            sub0 = train_dataset[1]
+            if test_loader is not None:
+                print('test dataset len:', len(test_dataset))
+            sample_index = 0
+            sub0 = train_dataset[sample_index]
             print(f'train input shape: ', sub0['image'].shape, 'label shape:', sub0['label'].shape)
-            sub1 = valid_dataset[1]
+            sub1 = valid_dataset[sample_index]
             print('valid input shape: ', sub1['image'].shape, 'label shape:', sub1['label'].shape)
-            sub2 = test_dataset[1]
-            print('test input shape: ', sub2['image'].shape, 'label shape:', sub2['label'].shape)
+            if test_loader is not None:
+                sub2 = test_dataset[sample_index]
+                print('test input shape: ', sub2['image'].shape, 'label shape:', sub2['label'].shape)
             print(' - - -'*20)
             print('device:', device)
             print(args)
@@ -365,10 +407,14 @@ def main(args):
             start_epoch = time.time()
             if args.distributed:
                 train_sampler.set_epoch(epoch) # 为了让每张卡在每个周期中得到的数据是随机的
+                if hasattr(train_loader.dataset, "set_epoch"):
+                    train_loader.dataset.set_epoch(epoch)
                 train_loss = train(model, optimizer, loss_fn, train_loader, device=local_rank)
                 if local_rank == 0:
                     print(f"epoch {epoch} train loss: {train_loss:.4f}")
             else:
+                if hasattr(train_loader.dataset, "set_epoch"):
+                    train_loader.dataset.set_epoch(epoch)
                 train_loss = train(model, optimizer, loss_fn, train_loader, device)
                 print(f"epoch {epoch} train loss: {train_loss:.4f}")
             
@@ -444,42 +490,43 @@ def main(args):
             f.write(f'best hausdorff in validation set:{best_hausdorff:.4f}, correspondence dice {best_hausdorff_cor_dice:.4f}, in epoch: {best_hausdorff_epoch}.\n')
         
         
-        # test phase
-        if args.distributed:
-            if local_rank==0:
+        if test_loader is not None:
+            # test phase
+            if args.distributed:
+                if local_rank==0:
+                    print(' - - - - - test phase - - - - - ')
+            else:
                 print(' - - - - - test phase - - - - - ')
-        else:
-            print(' - - - - - test phase - - - - - ')
-        best_dice_model_path = weight_save_folder+ f'/best_dice_model.pth'
-        assert os.path.exists(best_dice_model_path), "cannot find {} file".format(best_dice_model_path)
-        
-        # load and test dice model
-        if args.distributed:
-            if local_rank==0:
-                dict_ = torch.load(best_dice_model_path, map_location='cuda:{}'.format(local_rank))
+            best_dice_model_path = weight_save_folder+ f'/best_dice_model.pth'
+            assert os.path.exists(best_dice_model_path), "cannot find {} file".format(best_dice_model_path)
+            
+            # load and test dice model
+            if args.distributed:
+                if local_rank==0:
+                    dict_ = torch.load(best_dice_model_path, map_location='cuda:{}'.format(local_rank))
+                    model.module.load_state_dict(dict_['state_dict'], strict=False)
+                    print(f"dice model performance in valid set, dice: {dict_['dice']:.4f}, hausdorff: {dict_['hausdorff']:.4f}")
+            else:
+                dict_ = torch.load(best_dice_model_path)
                 model.module.load_state_dict(dict_['state_dict'], strict=False)
                 print(f"dice model performance in valid set, dice: {dict_['dice']:.4f}, hausdorff: {dict_['hausdorff']:.4f}")
-        else:
-            dict_ = torch.load(best_dice_model_path)
-            model.module.load_state_dict(dict_['state_dict'], strict=False)
-            print(f"dice model performance in valid set, dice: {dict_['dice']:.4f}, hausdorff: {dict_['hausdorff']:.4f}")
-        
-        if args.distributed:
-            if local_rank==0:
+            
+            if args.distributed:
+                if local_rank==0:
+                    test_mean_dice, test_dice_wt, test_dice_tc, test_dice_et, test_mean_hausdorff, test_hausdorff_wt, test_hausdorff_tc, test_hausdorff_et \
+                    = test(model, model_inferer, test_loader, nii_saver_gt, nii_saver_pred_dice, local_rank)
+                    print(f"Dice mean: {test_mean_dice:.4f}, WT: {test_dice_wt:.4f}, TC: {test_dice_tc:.4f}, ET: {test_dice_et:.4f}")
+                    print(f"Hausdorff mean: {test_mean_hausdorff:.4f}, WT: {test_hausdorff_wt:.4f}, TC: {test_hausdorff_tc:.4f}, ET: {test_hausdorff_et:.4f}\n")
+                    f.write(f"dice mean: {test_mean_dice:.4f}, WT: {test_dice_wt:.4f}, TC: {test_dice_tc:.4f}, ET: {test_dice_et:.4f}\n")
+                    f.write(f"Hausdorff mean: {test_mean_hausdorff:.4f}, WT: {test_hausdorff_wt:.4f}, TC: {test_hausdorff_tc:.4f}, ET: {test_hausdorff_et:.4f}\n")
+                torch.distributed.barrier()
+            else:
                 test_mean_dice, test_dice_wt, test_dice_tc, test_dice_et, test_mean_hausdorff, test_hausdorff_wt, test_hausdorff_tc, test_hausdorff_et \
-                = test(model, model_inferer, test_loader, nii_saver_gt, nii_saver_pred_dice, local_rank)
+                = test(model, model_inferer, test_loader, nii_saver_gt, nii_saver_pred_dice, device)
                 print(f"Dice mean: {test_mean_dice:.4f}, WT: {test_dice_wt:.4f}, TC: {test_dice_tc:.4f}, ET: {test_dice_et:.4f}")
-                print(f"Hausdorff mean: {test_mean_hausdorff:.4f}, WT: {test_hausdorff_wt:.4f}, TC: {test_hausdorff_tc:.4f}, ET: {test_hausdorff_et:.4f}\n")
+                print(f"Hausdorff mean: {test_mean_hausdorff:.4f}, WT: {test_hausdorff_wt:.4f}, TC: {test_hausdorff_tc:.4f}, ET: {test_hausdorff_et:.4f}")
                 f.write(f"dice mean: {test_mean_dice:.4f}, WT: {test_dice_wt:.4f}, TC: {test_dice_tc:.4f}, ET: {test_dice_et:.4f}\n")
                 f.write(f"Hausdorff mean: {test_mean_hausdorff:.4f}, WT: {test_hausdorff_wt:.4f}, TC: {test_hausdorff_tc:.4f}, ET: {test_hausdorff_et:.4f}\n")
-            torch.distributed.barrier()
-        else:
-            test_mean_dice, test_dice_wt, test_dice_tc, test_dice_et, test_mean_hausdorff, test_hausdorff_wt, test_hausdorff_tc, test_hausdorff_et \
-            = test(model, model_inferer, test_loader, nii_saver_gt, nii_saver_pred_dice, device)
-            print(f"Dice mean: {test_mean_dice:.4f}, WT: {test_dice_wt:.4f}, TC: {test_dice_tc:.4f}, ET: {test_dice_et:.4f}")
-            print(f"Hausdorff mean: {test_mean_hausdorff:.4f}, WT: {test_hausdorff_wt:.4f}, TC: {test_hausdorff_tc:.4f}, ET: {test_hausdorff_et:.4f}")
-            f.write(f"dice mean: {test_mean_dice:.4f}, WT: {test_dice_wt:.4f}, TC: {test_dice_tc:.4f}, ET: {test_dice_et:.4f}\n")
-            f.write(f"Hausdorff mean: {test_mean_hausdorff:.4f}, WT: {test_hausdorff_wt:.4f}, TC: {test_hausdorff_tc:.4f}, ET: {test_hausdorff_et:.4f}\n")
     f.close()
 
 if __name__ == '__main__':
