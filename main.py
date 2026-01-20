@@ -127,33 +127,6 @@ def main(args):
     modality_num = len(modality_lst)
     
     train_crop_size = (args.crop_H, args.crop_W, args.crop_D)
-    
-    transform_brats20 = {
-        'train': Compose([
-            LoadImaged(keys=["image", "label"]),
-            EnsureChannelFirstd(keys="image"),
-            EnsureTyped(keys=["image", "label"]), 
-            ConvertToMultiChannelBasedOnBratsClassesd(keys="label"),
-            CropForegroundd(keys=["image", "label"], source_key="image", k_divisible=train_crop_size), # 裁剪出image有像素信息的区域
-            RandSpatialCropd(keys=["image", "label"], roi_size=train_crop_size, random_size=False), # H W D
-            RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0),
-            RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=1),
-            RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=2),
-            NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
-            RandScaleIntensityd(keys="image", factors=0.1, prob=0.5), # 通过 v = v * (1 + 因子) 随机缩放输入图像的强度，其中因子是随机选取的。
-            RandShiftIntensityd(keys="image", offsets=0.1, prob=0.5), # 使用随机选择的偏移量随机改变强度
-            ToTensord(keys=["image", "label"]),
-            ]),
-        
-        'valid': Compose([
-            LoadImaged(keys=["image", "label"]),
-            EnsureChannelFirstd(keys="image"),
-            EnsureTyped(keys=["image", "label"]),
-            ConvertToMultiChannelBasedOnBratsClassesd(keys="label"),
-            NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
-            ToTensord(keys=["image", "label"]),
-            ])
-        }
 
     with open(f"{save_folder}/test_log.txt", "a") as f:
 
@@ -161,6 +134,32 @@ def main(args):
         
         test_loader = None
         if args.dataset.lower() == 'brats':
+            transform_brats20 = {
+                'train': Compose([
+                    LoadImaged(keys=["image", "label"]),
+                    EnsureChannelFirstd(keys="image"),
+                    EnsureTyped(keys=["image", "label"]),
+                    ConvertToMultiChannelBasedOnBratsClassesd(keys="label"),
+                    CropForegroundd(keys=["image", "label"], source_key="image", k_divisible=train_crop_size), # 裁剪出image有像素信息的区域
+                    RandSpatialCropd(keys=["image", "label"], roi_size=train_crop_size, random_size=False), # H W D
+                    RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0),
+                    RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=1),
+                    RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=2),
+                    NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
+                    RandScaleIntensityd(keys="image", factors=0.1, prob=0.5), # 通过 v = v * (1 + 因子) 随机缩放输入图像的强度，其中因子是随机选取的。
+                    RandShiftIntensityd(keys="image", offsets=0.1, prob=0.5), # 使用随机选择的偏移量随机改变强度
+                    ToTensord(keys=["image", "label"]),
+                    ]),
+                
+                'valid': Compose([
+                    LoadImaged(keys=["image", "label"]),
+                    EnsureChannelFirstd(keys="image"),
+                    EnsureTyped(keys=["image", "label"]),
+                    ConvertToMultiChannelBasedOnBratsClassesd(keys="label"),
+                    NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
+                    ToTensord(keys=["image", "label"]),
+                    ])
+                }
             
             train_dataset, valid_dataset, test_dataset, train_list, valid_list, test_list = get_dataset_brats(
                 data_path = args.data_path,
