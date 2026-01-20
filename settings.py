@@ -226,7 +226,7 @@ def parse_opts():
 
     parser.add_argument(
         '--manual_seed', 
-        default=4294967295, 
+        default=12345, 
         type=int, 
         help='Manually set random seed')
 

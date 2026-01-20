@@ -64,10 +64,11 @@ from models.eoformer import EoFormer
 
 def init_seeds(manual_seed):
     # 实验可重复
-    set_determinism(seed=manual_seed)
-    os.environ['PYTHONHASHSEED'] = str(manual_seed)
-    torch.cuda.manual_seed(manual_seed)      # 为当前GPU设置随机种子（只用一块GPU）
-    torch.cuda.manual_seed_all(manual_seed)   # 为所有GPU设置随机种子（多块GPU)  
+    safe_seed = int(manual_seed) % (2**32 - 1)
+    set_determinism(seed=safe_seed)
+    os.environ['PYTHONHASHSEED'] = str(safe_seed)
+    torch.cuda.manual_seed(safe_seed)      # 为当前GPU设置随机种子（只用一块GPU）
+    torch.cuda.manual_seed_all(safe_seed)   # 为所有GPU设置随机种子（多块GPU)  
 
 def get_parameter_number(model):
     total_num = sum(p.numel() for p in model.parameters())
