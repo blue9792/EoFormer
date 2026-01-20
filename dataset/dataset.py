@@ -42,8 +42,14 @@ class NpyBraTSDataset(Dataset):
             if not os.path.exists(seg_path):
                 continue
             seg = np.load(seg_path, mmap_mode="r" if not self.cache_npy_in_ram else None)
-            tumor_per_slice = (seg > 0).any(axis=(0, 1))
-            if int(tumor_per_slice.sum()) < self.min_tumor_slices:
+            wt_slices = self._region_slice_presence(seg, "WT")
+            tc_slices = self._region_slice_presence(seg, "TC")
+            et_slices = self._region_slice_presence(seg, "ET")
+            if (
+                int(wt_slices.sum()) < self.min_tumor_slices
+                or int(tc_slices.sum()) < self.min_tumor_slices
+                or int(et_slices.sum()) < self.min_tumor_slices
+            ):
                 continue
             self.patient_files.append(x_path)
 
@@ -72,6 +78,18 @@ class NpyBraTSDataset(Dataset):
             raise ValueError(region)
         return mask.astype(np.uint8)
 
+    @staticmethod
+    def _region_slice_presence(seg: np.ndarray, region: str) -> np.ndarray:
+        if region == "WT":
+            region_mask = seg > 0
+        elif region == "TC":
+            region_mask = (seg == 1) | (seg == 4)
+        elif region == "ET":
+            region_mask = seg == 4
+        else:
+            raise ValueError(region)
+        return region_mask.any(axis=(0, 1))
+
     def _load_npy(self, x_path: str) -> Dict[str, np.ndarray]:
         pid = os.path.basename(x_path).replace("_x.npy", "")
 
@@ -89,22 +107,44 @@ class NpyBraTSDataset(Dataset):
 
         return {"x": x, "seg": seg}
 
-    def _sample_indices(self, tumor_per_slice: np.ndarray, rng: np.random.RandomState) -> List[int]:
-        depth = tumor_per_slice.shape[0]
+    def _sample_indices(
+        self,
+        wt_slices: np.ndarray,
+        tc_slices: np.ndarray,
+        et_slices: np.ndarray,
+        rng: np.random.RandomState,
+    ) -> List[int]:
+        depth = wt_slices.shape[0]
         num_frames = min(self.num_frames, depth)
         valid_starts = np.arange(0, depth - num_frames + 1)
         if len(valid_starts) == 0:
             return list(range(depth))
 
-        tumor_counts = np.convolve(
-            tumor_per_slice.astype(np.int32),
+        wt_counts = np.convolve(
+            wt_slices.astype(np.int32),
+            np.ones(num_frames, dtype=np.int32),
+            mode="valid",
+        )
+        tc_counts = np.convolve(
+            tc_slices.astype(np.int32),
+            np.ones(num_frames, dtype=np.int32),
+            mode="valid",
+        )
+        et_counts = np.convolve(
+            et_slices.astype(np.int32),
             np.ones(num_frames, dtype=np.int32),
             mode="valid",
         )
         if self.min_tumor_slices > 0:
-            candidates = valid_starts[tumor_counts >= self.min_tumor_slices]
+            candidates = valid_starts[
+                (wt_counts >= self.min_tumor_slices)
+                & (tc_counts >= self.min_tumor_slices)
+                & (et_counts >= self.min_tumor_slices)
+            ]
             if len(candidates) == 0:
-                candidates = valid_starts
+                raise RuntimeError(
+                    "No valid clip satisfies WT/TC/ET minimum slice requirement."
+                )
         else:
             candidates = valid_starts
 
@@ -122,9 +162,15 @@ class NpyBraTSDataset(Dataset):
             x = arrays["x"]
             seg = arrays["seg"]
 
-            tumor_per_slice = (seg > 0).any(axis=(0, 1))
-            z_inds = self._sample_indices(tumor_per_slice, rng)
-            if int(tumor_per_slice[z_inds].sum()) >= self.min_tumor_slices:
+            wt_slices = self._region_slice_presence(seg, "WT")
+            tc_slices = self._region_slice_presence(seg, "TC")
+            et_slices = self._region_slice_presence(seg, "ET")
+            z_inds = self._sample_indices(wt_slices, tc_slices, et_slices, rng)
+            if (
+                int(wt_slices[z_inds].sum()) >= self.min_tumor_slices
+                and int(tc_slices[z_inds].sum()) >= self.min_tumor_slices
+                and int(et_slices[z_inds].sum()) >= self.min_tumor_slices
+            ):
                 break
             idx = int(rng.randint(0, len(self.patient_files)))
         else:
