@@ -418,11 +418,13 @@ def main(args):
                 train_loss = train(model, optimizer, loss_fn, train_loader, device=local_rank)
                 if local_rank == 0:
                     print(f"epoch {epoch} train loss: {train_loss:.4f}")
+                    f.write(f"epoch {epoch} train loss: {train_loss:.4f}\n")
             else:
                 if hasattr(train_loader.dataset, "set_epoch"):
                     train_loader.dataset.set_epoch(epoch)
                 train_loss = train(model, optimizer, loss_fn, train_loader, device)
                 print(f"epoch {epoch} train loss: {train_loss:.4f}")
+                f.write(f"epoch {epoch} train loss: {train_loss:.4f}\n")
             
             scheduler.step()
             # validate
@@ -434,6 +436,9 @@ def main(args):
                         print(f"epoch {epoch} valid loss: {valid_loss:.4f}")
                         print(f"Dice mean: {valid_mean_dice:.4f}, WT: {valid_dice_wt:.4f}, TC: {valid_dice_tc:.4f}, ET: {valid_dice_et:.4f}")
                         print(f"Hausdorff mean: {valid_mean_hausdorff:.4f}, WT: {valid_hausdorff_wt:.4f}, TC: {valid_hausdorff_tc:.4f}, ET: {valid_hausdorff_et:.4f}")
+                        f.write(f"epoch {epoch} valid loss: {valid_loss:.4f}\n")
+                        f.write(f"Dice mean: {valid_mean_dice:.4f}, WT: {valid_dice_wt:.4f}, TC: {valid_dice_tc:.4f}, ET: {valid_dice_et:.4f}\n")
+                        f.write(f"Hausdorff mean: {valid_mean_hausdorff:.4f}, WT: {valid_hausdorff_wt:.4f}, TC: {valid_hausdorff_tc:.4f}, ET: {valid_hausdorff_et:.4f}\n")
                         if epoch > min_epoch and valid_mean_dice > best_dice:  # 保存在验证集上当前最佳dice模型
                             best_dice = valid_mean_dice
                             best_dice_cor_hausdorff = valid_mean_hausdorff
@@ -453,6 +458,9 @@ def main(args):
                     print(f"epoch {epoch} valid loss: {valid_loss:.4f}")
                     print(f"Dice mean: {valid_mean_dice:.4f}, WT: {valid_dice_wt:.4f}, TC: {valid_dice_tc:.4f}, ET: {valid_dice_et:.4f}")
                     print(f"Hausdorff mean: {valid_mean_hausdorff:.4f}, WT: {valid_hausdorff_wt:.4f}, TC: {valid_hausdorff_tc:.4f}, ET: {valid_hausdorff_et:.4f}")
+                    f.write(f"epoch {epoch} valid loss: {valid_loss:.4f}\n")
+                    f.write(f"Dice mean: {valid_mean_dice:.4f}, WT: {valid_dice_wt:.4f}, TC: {valid_dice_tc:.4f}, ET: {valid_dice_et:.4f}\n")
+                    f.write(f"Hausdorff mean: {valid_mean_hausdorff:.4f}, WT: {valid_hausdorff_wt:.4f}, TC: {valid_hausdorff_tc:.4f}, ET: {valid_hausdorff_et:.4f}\n")
                     if epoch > min_epoch and valid_mean_dice > best_dice:  # 保存在验证集上当前最佳dice模型
                         best_dice = valid_mean_dice
                         best_dice_cor_hausdorff = valid_mean_hausdorff
