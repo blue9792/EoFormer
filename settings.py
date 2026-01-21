@@ -24,6 +24,18 @@ def parse_opts():
         default="/data/sd0809/BraTS2020",
         type=str,
         help='Root directory path of data')
+
+    parser.add_argument(
+        '--train_dir',
+        default="",
+        type=str,
+        help='Directory containing training npy files')
+
+    parser.add_argument(
+        '--val_dir',
+        default="",
+        type=str,
+        help='Directory containing validation npy files')
     
     parser.add_argument(
         '--dice_model_path',
@@ -34,7 +46,7 @@ def parse_opts():
         '--dataset',
         default="tiantan",
         type=str,
-        help='( tiantan | brats20 | ...) '
+        help='( tiantan | brats20 | npy | ...) '
     )
 
     parser.add_argument(
@@ -161,9 +173,26 @@ def parse_opts():
 
     parser.add_argument(
         '--crop_D',
-        default=24,
+        default=16,
         type=int,
         help='Input size of width')
+
+    parser.add_argument(
+        '--min_tumor_slices',
+        default=4,
+        type=int,
+        help='Minimum tumor slices per sampled clip')
+
+    parser.add_argument(
+        '--reverse_time_prob',
+        default=0.0,
+        type=float,
+        help='Probability to reverse sampled slice order')
+
+    parser.add_argument(
+        '--cache_npy_in_ram',
+        action='store_true',
+        help='Cache npy data in RAM')
 
     parser.add_argument(
         '--sw_batch_size',
@@ -197,7 +226,7 @@ def parse_opts():
 
     parser.add_argument(
         '--manual_seed', 
-        default=4294967295, 
+        default=12345, 
         type=int, 
         help='Manually set random seed')
 

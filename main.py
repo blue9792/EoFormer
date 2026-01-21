@@ -26,7 +26,7 @@ from thop import profile
 
 from optimizers.lr_scheduler import LinearWarmupCosineAnnealingLR
 
-from dataset.dataset import get_dataset_brats
+from dataset.dataset import get_dataset_brats, get_dataset_npy
 from utils.utils import SequentialDistributedSampler
 from trainer import train, evaluate, test
 
@@ -64,10 +64,11 @@ from models.eoformer import EoFormer
 
 def init_seeds(manual_seed):
     # 实验可重复
-    set_determinism(seed=manual_seed)
-    os.environ['PYTHONHASHSEED'] = str(manual_seed)
-    torch.cuda.manual_seed(manual_seed)      # 为当前GPU设置随机种子（只用一块GPU）
-    torch.cuda.manual_seed_all(manual_seed)   # 为所有GPU设置随机种子（多块GPU)  
+    safe_seed = int(manual_seed) % (2**32 - 1)
+    set_determinism(seed=safe_seed)
+    os.environ['PYTHONHASHSEED'] = str(safe_seed)
+    torch.cuda.manual_seed(safe_seed)      # 为当前GPU设置随机种子（只用一块GPU）
+    torch.cuda.manual_seed_all(safe_seed)   # 为所有GPU设置随机种子（多块GPU)  
 
 def get_parameter_number(model):
     total_num = sum(p.numel() for p in model.parameters())
@@ -126,39 +127,39 @@ def main(args):
     modality_num = len(modality_lst)
     
     train_crop_size = (args.crop_H, args.crop_W, args.crop_D)
-    
-    transform_brats20 = {
-        'train': Compose([
-            LoadImaged(keys=["image", "label"]),
-            EnsureChannelFirstd(keys="image"),
-            EnsureTyped(keys=["image", "label"]), 
-            ConvertToMultiChannelBasedOnBratsClassesd(keys="label"),
-            CropForegroundd(keys=["image", "label"], source_key="image", k_divisible=train_crop_size), # 裁剪出image有像素信息的区域
-            RandSpatialCropd(keys=["image", "label"], roi_size=train_crop_size, random_size=False), # H W D
-            RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0),
-            RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=1),
-            RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=2),
-            NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
-            RandScaleIntensityd(keys="image", factors=0.1, prob=0.5), # 通过 v = v * (1 + 因子) 随机缩放输入图像的强度，其中因子是随机选取的。
-            RandShiftIntensityd(keys="image", offsets=0.1, prob=0.5), # 使用随机选择的偏移量随机改变强度
-            ToTensord(keys=["image", "label"]),
-            ]),
-        
-        'valid': Compose([
-            LoadImaged(keys=["image", "label"]),
-            EnsureChannelFirstd(keys="image"),
-            EnsureTyped(keys=["image", "label"]),
-            ConvertToMultiChannelBasedOnBratsClassesd(keys="label"),
-            NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
-            ToTensord(keys=["image", "label"]),
-            ])
-        }
 
     with open(f"{save_folder}/test_log.txt", "a") as f:
 
         f.write('Training start!\n')
         
+        test_loader = None
         if args.dataset.lower() == 'brats':
+            transform_brats20 = {
+                'train': Compose([
+                    LoadImaged(keys=["image", "label"]),
+                    EnsureChannelFirstd(keys="image"),
+                    EnsureTyped(keys=["image", "label"]),
+                    ConvertToMultiChannelBasedOnBratsClassesd(keys="label"),
+                    CropForegroundd(keys=["image", "label"], source_key="image", k_divisible=train_crop_size), # 裁剪出image有像素信息的区域
+                    RandSpatialCropd(keys=["image", "label"], roi_size=train_crop_size, random_size=False), # H W D
+                    RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0),
+                    RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=1),
+                    RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=2),
+                    NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
+                    RandScaleIntensityd(keys="image", factors=0.1, prob=0.5), # 通过 v = v * (1 + 因子) 随机缩放输入图像的强度，其中因子是随机选取的。
+                    RandShiftIntensityd(keys="image", offsets=0.1, prob=0.5), # 使用随机选择的偏移量随机改变强度
+                    ToTensord(keys=["image", "label"]),
+                    ]),
+                
+                'valid': Compose([
+                    LoadImaged(keys=["image", "label"]),
+                    EnsureChannelFirstd(keys="image"),
+                    EnsureTyped(keys=["image", "label"]),
+                    ConvertToMultiChannelBasedOnBratsClassesd(keys="label"),
+                    NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
+                    ToTensord(keys=["image", "label"]),
+                    ])
+                }
             
             train_dataset, valid_dataset, test_dataset, train_list, valid_list, test_list = get_dataset_brats(
                 data_path = args.data_path,
@@ -197,21 +198,59 @@ def main(args):
                                     pin_memory=True,
                                     num_workers=args.num_workers
                                     )
+        elif args.dataset.lower() == 'npy':
+            train_dataset, valid_dataset = get_dataset_npy(
+                train_dir=args.train_dir,
+                val_dir=args.val_dir,
+                num_frames=args.crop_D,
+                min_tumor_slices=args.min_tumor_slices,
+                reverse_time_prob=args.reverse_time_prob,
+                seed=args.manual_seed,
+                cache_npy_in_ram=args.cache_npy_in_ram,
+                target_hw=(args.crop_H, args.crop_W),
+            )
+
+            if args.distributed:
+                train_sampler = DistributedSampler(train_dataset)
+                train_loader = DataLoader(
+                                    train_dataset,
+                                    batch_size=args.batch_size,
+                                    sampler=train_sampler,
+                                    pin_memory=True,
+                                    num_workers=args.num_workers,
+                                    prefetch_factor=4)
+            else:
+                train_loader = DataLoader(
+                                    train_dataset,
+                                    batch_size=args.batch_size,
+                                    shuffle=True,
+                                    pin_memory=True,
+                                    num_workers=args.num_workers,
+                                    prefetch_factor=4
+                                )
+
+            valid_loader = DataLoader(
+                                    valid_dataset,
+                                    batch_size=1,
+                                    shuffle=False,
+                                    pin_memory=True,
+                                    num_workers=args.num_workers
+                                    )
             
         if args.distributed:
             if local_rank==0:
                 print('train dataset len:', len(train_dataset))
                 print('valid dataset len:', len(valid_dataset))
-                print('test dataset len:', len(test_dataset))
-                sub0 = train_dataset[3]
-                print(sub0['image_meta_dict']['filename_or_obj'].split('/')[-1])
+                if test_loader is not None:
+                    print('test dataset len:', len(test_dataset))
+                sample_index = 0
+                sub0 = train_dataset[sample_index]
                 print(f'train input shape: ', sub0['image'].shape, 'label shape:', sub0['label'].shape)
-                sub1 = valid_dataset[3]
-                print(sub1['image_meta_dict']['filename_or_obj'].split('/')[-1])
+                sub1 = valid_dataset[sample_index]
                 print('valid input shape: ', sub1['image'].shape, 'label shape:', sub1['label'].shape)
-                sub2 = test_dataset[3]
-                print(sub2['image_meta_dict']['filename_or_obj'].split('/')[-1])
-                print('test input shape: ', sub2['image'].shape, 'label shape:', sub2['label'].shape)
+                if test_loader is not None:
+                    sub2 = test_dataset[sample_index]
+                    print('test input shape: ', sub2['image'].shape, 'label shape:', sub2['label'].shape)
                 
                 print(' - - -'*20)
                 print('device:', device)
@@ -223,13 +262,16 @@ def main(args):
         else:
             print('train dataset len:', len(train_dataset))
             print('valid dataset len:', len(valid_dataset))
-            print('test dataset len:', len(test_dataset))
-            sub0 = train_dataset[1]
+            if test_loader is not None:
+                print('test dataset len:', len(test_dataset))
+            sample_index = 0
+            sub0 = train_dataset[sample_index]
             print(f'train input shape: ', sub0['image'].shape, 'label shape:', sub0['label'].shape)
-            sub1 = valid_dataset[1]
+            sub1 = valid_dataset[sample_index]
             print('valid input shape: ', sub1['image'].shape, 'label shape:', sub1['label'].shape)
-            sub2 = test_dataset[1]
-            print('test input shape: ', sub2['image'].shape, 'label shape:', sub2['label'].shape)
+            if test_loader is not None:
+                sub2 = test_dataset[sample_index]
+                print('test input shape: ', sub2['image'].shape, 'label shape:', sub2['label'].shape)
             print(' - - -'*20)
             print('device:', device)
             print(args)
@@ -248,7 +290,9 @@ def main(args):
             model = nn.parallel.DistributedDataParallel(model.to(local_rank), device_ids=[local_rank])
             # model = nn.parallel.DistributedDataParallel(model.to(local_rank), device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
         else:
-            model = nn.DataParallel(model.to(device), device_ids = args.gpu_id)
+            model = model.to(device)
+            if args.gpu_id and len(args.gpu_id) > 1:
+                model = nn.DataParallel(model, device_ids=args.gpu_id)
         
         # if args.distributed:
         #     if local_rank==0:
@@ -260,13 +304,15 @@ def main(args):
         if args.distributed:
             if local_rank==0:
                 input = torch.randn(1, 4, 128, 128, 128).to(local_rank)
-                flops, params = profile(model.module, (input,))
+                profile_model = model.module if hasattr(model, "module") else model
+                flops, params = profile(profile_model, (input,))
                 print('Params = ' + str(params/1000**2) + 'M')
                 print('FLOPs = ' + str(flops/1000**3) + 'G')
             torch.distributed.barrier()
         else:
             input = torch.randn(1, 4, 128, 128, 128).to(device)
-            flops, params = profile(model.module, (input,))
+            profile_model = model.module if hasattr(model, "module") else model
+            flops, params = profile(profile_model, (input,))
             print('Params = ' + str(params/1000**2) + 'M')
             print('FLOPs = ' + str(flops/1000**3) + 'G')
         
@@ -321,7 +367,8 @@ def main(args):
                 start_epoch = checkpoint['epoch'] + 1
                 best_dice = checkpoint['dice']
                 best_hausdorff = checkpoint['hausdorff']
-                model.module.load_state_dict(checkpoint['state_dict'])
+                load_model = model.module if hasattr(model, "module") else model
+                load_model.load_state_dict(checkpoint['state_dict'])
                 optimizer.load_state_dict(checkpoint['optimizer'])
                 print(f"=> loaded checkpoint path: {weight_save_folder+ '/checkpoint.pth'}, (epoch {checkpoint['epoch']})")
             else:
@@ -348,11 +395,12 @@ def main(args):
         min_epoch = 30 if args.n_epochs > 150 else 0
 
         # 滑动窗口inference
+        predictor = model.module if hasattr(model, "module") else model
         model_inferer = partial(
             sliding_window_inference,
             roi_size=train_crop_size,
             sw_batch_size=args.sw_batch_size,
-            predictor=model.module,
+            predictor=predictor,
             overlap=args.inf_overlap,
         )
         
@@ -365,12 +413,18 @@ def main(args):
             start_epoch = time.time()
             if args.distributed:
                 train_sampler.set_epoch(epoch) # 为了让每张卡在每个周期中得到的数据是随机的
+                if hasattr(train_loader.dataset, "set_epoch"):
+                    train_loader.dataset.set_epoch(epoch)
                 train_loss = train(model, optimizer, loss_fn, train_loader, device=local_rank)
                 if local_rank == 0:
                     print(f"epoch {epoch} train loss: {train_loss:.4f}")
+                    f.write(f"epoch {epoch} train loss: {train_loss:.4f}\n")
             else:
+                if hasattr(train_loader.dataset, "set_epoch"):
+                    train_loader.dataset.set_epoch(epoch)
                 train_loss = train(model, optimizer, loss_fn, train_loader, device)
                 print(f"epoch {epoch} train loss: {train_loss:.4f}")
+                f.write(f"epoch {epoch} train loss: {train_loss:.4f}\n")
             
             scheduler.step()
             # validate
@@ -382,6 +436,9 @@ def main(args):
                         print(f"epoch {epoch} valid loss: {valid_loss:.4f}")
                         print(f"Dice mean: {valid_mean_dice:.4f}, WT: {valid_dice_wt:.4f}, TC: {valid_dice_tc:.4f}, ET: {valid_dice_et:.4f}")
                         print(f"Hausdorff mean: {valid_mean_hausdorff:.4f}, WT: {valid_hausdorff_wt:.4f}, TC: {valid_hausdorff_tc:.4f}, ET: {valid_hausdorff_et:.4f}")
+                        f.write(f"epoch {epoch} valid loss: {valid_loss:.4f}\n")
+                        f.write(f"Dice mean: {valid_mean_dice:.4f}, WT: {valid_dice_wt:.4f}, TC: {valid_dice_tc:.4f}, ET: {valid_dice_et:.4f}\n")
+                        f.write(f"Hausdorff mean: {valid_mean_hausdorff:.4f}, WT: {valid_hausdorff_wt:.4f}, TC: {valid_hausdorff_tc:.4f}, ET: {valid_hausdorff_et:.4f}\n")
                         if epoch > min_epoch and valid_mean_dice > best_dice:  # 保存在验证集上当前最佳dice模型
                             best_dice = valid_mean_dice
                             best_dice_cor_hausdorff = valid_mean_hausdorff
@@ -390,7 +447,7 @@ def main(args):
                                         'epoch': epoch,
                                         'dice': best_dice,
                                         'hausdorff': best_dice_cor_hausdorff,
-                                        'state_dict': model.module.state_dict(),
+                                        'state_dict': (model.module if hasattr(model, "module") else model).state_dict(),
                                         'optimizer': optimizer.state_dict()},
                                         weight_save_folder+ '/best_dice_model.pth')
                     torch.distributed.barrier()
@@ -401,6 +458,9 @@ def main(args):
                     print(f"epoch {epoch} valid loss: {valid_loss:.4f}")
                     print(f"Dice mean: {valid_mean_dice:.4f}, WT: {valid_dice_wt:.4f}, TC: {valid_dice_tc:.4f}, ET: {valid_dice_et:.4f}")
                     print(f"Hausdorff mean: {valid_mean_hausdorff:.4f}, WT: {valid_hausdorff_wt:.4f}, TC: {valid_hausdorff_tc:.4f}, ET: {valid_hausdorff_et:.4f}")
+                    f.write(f"epoch {epoch} valid loss: {valid_loss:.4f}\n")
+                    f.write(f"Dice mean: {valid_mean_dice:.4f}, WT: {valid_dice_wt:.4f}, TC: {valid_dice_tc:.4f}, ET: {valid_dice_et:.4f}\n")
+                    f.write(f"Hausdorff mean: {valid_mean_hausdorff:.4f}, WT: {valid_hausdorff_wt:.4f}, TC: {valid_hausdorff_tc:.4f}, ET: {valid_hausdorff_et:.4f}\n")
                     if epoch > min_epoch and valid_mean_dice > best_dice:  # 保存在验证集上当前最佳dice模型
                         best_dice = valid_mean_dice
                         best_dice_cor_hausdorff = valid_mean_hausdorff
@@ -409,7 +469,7 @@ def main(args):
                                     'epoch': epoch,
                                     'dice': best_dice,
                                     'hausdorff': best_dice_cor_hausdorff,
-                                    'state_dict': model.module.state_dict(),
+                                    'state_dict': (model.module if hasattr(model, "module") else model).state_dict(),
                                     'optimizer': optimizer.state_dict()},
                                     weight_save_folder+ f'/best_dice_model.pth')
 
@@ -444,42 +504,45 @@ def main(args):
             f.write(f'best hausdorff in validation set:{best_hausdorff:.4f}, correspondence dice {best_hausdorff_cor_dice:.4f}, in epoch: {best_hausdorff_epoch}.\n')
         
         
-        # test phase
-        if args.distributed:
-            if local_rank==0:
+        if test_loader is not None:
+            # test phase
+            if args.distributed:
+                if local_rank==0:
+                    print(' - - - - - test phase - - - - - ')
+            else:
                 print(' - - - - - test phase - - - - - ')
-        else:
-            print(' - - - - - test phase - - - - - ')
-        best_dice_model_path = weight_save_folder+ f'/best_dice_model.pth'
-        assert os.path.exists(best_dice_model_path), "cannot find {} file".format(best_dice_model_path)
-        
-        # load and test dice model
-        if args.distributed:
-            if local_rank==0:
-                dict_ = torch.load(best_dice_model_path, map_location='cuda:{}'.format(local_rank))
-                model.module.load_state_dict(dict_['state_dict'], strict=False)
+            best_dice_model_path = weight_save_folder+ f'/best_dice_model.pth'
+            assert os.path.exists(best_dice_model_path), "cannot find {} file".format(best_dice_model_path)
+            
+            # load and test dice model
+            if args.distributed:
+                if local_rank==0:
+                    dict_ = torch.load(best_dice_model_path, map_location='cuda:{}'.format(local_rank))
+                    load_model = model.module if hasattr(model, "module") else model
+                    load_model.load_state_dict(dict_['state_dict'], strict=False)
+                    print(f"dice model performance in valid set, dice: {dict_['dice']:.4f}, hausdorff: {dict_['hausdorff']:.4f}")
+            else:
+                dict_ = torch.load(best_dice_model_path)
+                load_model = model.module if hasattr(model, "module") else model
+                load_model.load_state_dict(dict_['state_dict'], strict=False)
                 print(f"dice model performance in valid set, dice: {dict_['dice']:.4f}, hausdorff: {dict_['hausdorff']:.4f}")
-        else:
-            dict_ = torch.load(best_dice_model_path)
-            model.module.load_state_dict(dict_['state_dict'], strict=False)
-            print(f"dice model performance in valid set, dice: {dict_['dice']:.4f}, hausdorff: {dict_['hausdorff']:.4f}")
-        
-        if args.distributed:
-            if local_rank==0:
+            
+            if args.distributed:
+                if local_rank==0:
+                    test_mean_dice, test_dice_wt, test_dice_tc, test_dice_et, test_mean_hausdorff, test_hausdorff_wt, test_hausdorff_tc, test_hausdorff_et \
+                    = test(model, model_inferer, test_loader, nii_saver_gt, nii_saver_pred_dice, local_rank)
+                    print(f"Dice mean: {test_mean_dice:.4f}, WT: {test_dice_wt:.4f}, TC: {test_dice_tc:.4f}, ET: {test_dice_et:.4f}")
+                    print(f"Hausdorff mean: {test_mean_hausdorff:.4f}, WT: {test_hausdorff_wt:.4f}, TC: {test_hausdorff_tc:.4f}, ET: {test_hausdorff_et:.4f}\n")
+                    f.write(f"dice mean: {test_mean_dice:.4f}, WT: {test_dice_wt:.4f}, TC: {test_dice_tc:.4f}, ET: {test_dice_et:.4f}\n")
+                    f.write(f"Hausdorff mean: {test_mean_hausdorff:.4f}, WT: {test_hausdorff_wt:.4f}, TC: {test_hausdorff_tc:.4f}, ET: {test_hausdorff_et:.4f}\n")
+                torch.distributed.barrier()
+            else:
                 test_mean_dice, test_dice_wt, test_dice_tc, test_dice_et, test_mean_hausdorff, test_hausdorff_wt, test_hausdorff_tc, test_hausdorff_et \
-                = test(model, model_inferer, test_loader, nii_saver_gt, nii_saver_pred_dice, local_rank)
+                = test(model, model_inferer, test_loader, nii_saver_gt, nii_saver_pred_dice, device)
                 print(f"Dice mean: {test_mean_dice:.4f}, WT: {test_dice_wt:.4f}, TC: {test_dice_tc:.4f}, ET: {test_dice_et:.4f}")
-                print(f"Hausdorff mean: {test_mean_hausdorff:.4f}, WT: {test_hausdorff_wt:.4f}, TC: {test_hausdorff_tc:.4f}, ET: {test_hausdorff_et:.4f}\n")
+                print(f"Hausdorff mean: {test_mean_hausdorff:.4f}, WT: {test_hausdorff_wt:.4f}, TC: {test_hausdorff_tc:.4f}, ET: {test_hausdorff_et:.4f}")
                 f.write(f"dice mean: {test_mean_dice:.4f}, WT: {test_dice_wt:.4f}, TC: {test_dice_tc:.4f}, ET: {test_dice_et:.4f}\n")
                 f.write(f"Hausdorff mean: {test_mean_hausdorff:.4f}, WT: {test_hausdorff_wt:.4f}, TC: {test_hausdorff_tc:.4f}, ET: {test_hausdorff_et:.4f}\n")
-            torch.distributed.barrier()
-        else:
-            test_mean_dice, test_dice_wt, test_dice_tc, test_dice_et, test_mean_hausdorff, test_hausdorff_wt, test_hausdorff_tc, test_hausdorff_et \
-            = test(model, model_inferer, test_loader, nii_saver_gt, nii_saver_pred_dice, device)
-            print(f"Dice mean: {test_mean_dice:.4f}, WT: {test_dice_wt:.4f}, TC: {test_dice_tc:.4f}, ET: {test_dice_et:.4f}")
-            print(f"Hausdorff mean: {test_mean_hausdorff:.4f}, WT: {test_hausdorff_wt:.4f}, TC: {test_hausdorff_tc:.4f}, ET: {test_hausdorff_et:.4f}")
-            f.write(f"dice mean: {test_mean_dice:.4f}, WT: {test_dice_wt:.4f}, TC: {test_dice_tc:.4f}, ET: {test_dice_et:.4f}\n")
-            f.write(f"Hausdorff mean: {test_mean_hausdorff:.4f}, WT: {test_hausdorff_wt:.4f}, TC: {test_hausdorff_tc:.4f}, ET: {test_hausdorff_et:.4f}\n")
     f.close()
 
 if __name__ == '__main__':

@@ -235,6 +235,7 @@ class Block(nn.Module):
                  drop=0., drop_path=0.,
                  layer_scale_init_value=None, res_scale_init_value=None,
                  scale_trainable=True, 
+                 position_embedding=None,
                  ):
 
         super().__init__()
@@ -254,9 +255,10 @@ class Block(nn.Module):
             if layer_scale_init_value else nn.Identity()
         self.res_scale2 = Scale(dim=dim, init_value=res_scale_init_value) \
             if res_scale_init_value else nn.Identity()
+        self.position_embedding = position_embedding
         
     def forward(self, x):
-        if self.position_embedding:
+        if self.position_embedding is not None:
             x = self.res_scale1(x) + \
                 self.layer_scale1(
                     self.drop_path1(
