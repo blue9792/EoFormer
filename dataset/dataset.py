@@ -22,6 +22,9 @@ class NpyBraTSDataset(Dataset):
         seed: int = 123,
         cache_npy_in_ram: bool = False,
         target_hw: Tuple[int, int] = (256, 256),
+        is_train: bool = False,
+        intensity_scale: float = 0.1,
+        intensity_shift: float = 0.1,
     ) -> None:
         self.npy_root = npy_root
         self.num_frames = num_frames
@@ -30,6 +33,9 @@ class NpyBraTSDataset(Dataset):
         self.seed = seed
         self.cache_npy_in_ram = cache_npy_in_ram
         self.target_hw = target_hw
+        self.is_train = is_train
+        self.intensity_scale = intensity_scale
+        self.intensity_shift = intensity_shift
         self.epoch = 0
 
         all_x_npy = sorted(glob.glob(os.path.join(npy_root, "*_x.npy")))
@@ -106,6 +112,32 @@ class NpyBraTSDataset(Dataset):
             return out
 
         return {"x": x, "seg": seg}
+
+    @staticmethod
+    def _normalize_intensity(x: torch.Tensor) -> torch.Tensor:
+        x = x.clone()
+        for c in range(x.shape[0]):
+            channel = x[c]
+            mask = channel != 0
+            if mask.any():
+                mean = channel[mask].mean()
+                std = channel[mask].std()
+                if std > 0:
+                    channel = (channel - mean) / std
+                else:
+                    channel = channel - mean
+                x[c] = channel
+        return x
+
+    def _random_intensity(self, x: torch.Tensor, rng: np.random.RandomState) -> torch.Tensor:
+        x = x.clone()
+        if self.intensity_scale > 0 and rng.rand() < 0.5:
+            scale = 1.0 + float(rng.uniform(-self.intensity_scale, self.intensity_scale))
+            x = x * scale
+        if self.intensity_shift > 0 and rng.rand() < 0.5:
+            shift = float(rng.uniform(-self.intensity_shift, self.intensity_shift))
+            x = x + shift
+        return x
 
     def _sample_indices(
         self,
@@ -204,8 +236,23 @@ class NpyBraTSDataset(Dataset):
                 mode="nearest",
             )
 
-        frames_t = frames_t.permute(1, 0, 2, 3).contiguous()
-        masks_t = masks_t.permute(1, 0, 2, 3).contiguous()
+        frames_t = frames_t.permute(1, 2, 3, 0).contiguous()
+        masks_t = masks_t.permute(1, 2, 3, 0).contiguous()
+
+        if self.is_train:
+            if rng.rand() < 0.5:
+                frames_t = frames_t.flip(1)
+                masks_t = masks_t.flip(1)
+            if rng.rand() < 0.5:
+                frames_t = frames_t.flip(2)
+                masks_t = masks_t.flip(2)
+            if rng.rand() < 0.5:
+                frames_t = frames_t.flip(3)
+                masks_t = masks_t.flip(3)
+
+        frames_t = self._normalize_intensity(frames_t)
+        if self.is_train:
+            frames_t = self._random_intensity(frames_t, rng)
 
         return {
             "image": frames_t,
@@ -294,6 +341,7 @@ def get_dataset_npy(
         seed=seed,
         cache_npy_in_ram=cache_npy_in_ram,
         target_hw=target_hw,
+        is_train=True,
     )
     valid_set = NpyBraTSDataset(
         npy_root=val_dir,
@@ -303,5 +351,6 @@ def get_dataset_npy(
         seed=seed,
         cache_npy_in_ram=cache_npy_in_ram,
         target_hw=target_hw,
+        is_train=False,
     )
     return train_set, valid_set
