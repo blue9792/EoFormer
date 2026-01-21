@@ -367,7 +367,8 @@ def main(args):
                 start_epoch = checkpoint['epoch'] + 1
                 best_dice = checkpoint['dice']
                 best_hausdorff = checkpoint['hausdorff']
-                model.module.load_state_dict(checkpoint['state_dict'])
+                load_model = model.module if hasattr(model, "module") else model
+                load_model.load_state_dict(checkpoint['state_dict'])
                 optimizer.load_state_dict(checkpoint['optimizer'])
                 print(f"=> loaded checkpoint path: {weight_save_folder+ '/checkpoint.pth'}, (epoch {checkpoint['epoch']})")
             else:
@@ -441,7 +442,7 @@ def main(args):
                                         'epoch': epoch,
                                         'dice': best_dice,
                                         'hausdorff': best_dice_cor_hausdorff,
-                                        'state_dict': model.module.state_dict(),
+                                        'state_dict': (model.module if hasattr(model, "module") else model).state_dict(),
                                         'optimizer': optimizer.state_dict()},
                                         weight_save_folder+ '/best_dice_model.pth')
                     torch.distributed.barrier()
@@ -460,7 +461,7 @@ def main(args):
                                     'epoch': epoch,
                                     'dice': best_dice,
                                     'hausdorff': best_dice_cor_hausdorff,
-                                    'state_dict': model.module.state_dict(),
+                                    'state_dict': (model.module if hasattr(model, "module") else model).state_dict(),
                                     'optimizer': optimizer.state_dict()},
                                     weight_save_folder+ f'/best_dice_model.pth')
 
@@ -509,11 +510,13 @@ def main(args):
             if args.distributed:
                 if local_rank==0:
                     dict_ = torch.load(best_dice_model_path, map_location='cuda:{}'.format(local_rank))
-                    model.module.load_state_dict(dict_['state_dict'], strict=False)
+                    load_model = model.module if hasattr(model, "module") else model
+                    load_model.load_state_dict(dict_['state_dict'], strict=False)
                     print(f"dice model performance in valid set, dice: {dict_['dice']:.4f}, hausdorff: {dict_['hausdorff']:.4f}")
             else:
                 dict_ = torch.load(best_dice_model_path)
-                model.module.load_state_dict(dict_['state_dict'], strict=False)
+                load_model = model.module if hasattr(model, "module") else model
+                load_model.load_state_dict(dict_['state_dict'], strict=False)
                 print(f"dice model performance in valid set, dice: {dict_['dice']:.4f}, hausdorff: {dict_['hausdorff']:.4f}")
             
             if args.distributed:
